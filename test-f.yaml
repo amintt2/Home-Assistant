@@ -1,10 +1,8 @@
 blueprint:
-  name: Thermostat complet ON/OFF (Corrigé)
+  name: Thermostat Complet (Fix Syntax)
   description: >
-    Thermostat ON/OFF avec :
-    - Correction des erreurs de variables (!input)
-    - Gestion correcte du passage à minuit pour le mode nuit
-    - Compensation climatique
+    Thermostat avec correction syntaxique stricte.
+    Gère: Boost, Absence, Nuit (passage minuit inclus), Météo.
   domain: automation
 
   input:
@@ -30,7 +28,7 @@ blueprint:
           domain: device_tracker
     mode_select:
       name: Mode chauffage (input_select)
-      description: Doit contenir les options confort, eco, nuit, absent
+      description: Options requises -> confort, eco, nuit, absent
       selector:
         entity:
           domain: input_select
@@ -40,20 +38,21 @@ blueprint:
         entity:
           domain: input_boolean
     
-    # Inputs Helper pour l'affichage (optionnels mais recommandés d'être définis)
+    # Helpers obligatoires pour stocker les résultats
     target_temp_helper:
-      name: Helper pour afficher la consigne (input_number)
-      description: Entité pour stocker la température cible calculée
+      name: Helper stockage Consigne (input_number)
+      description: Créez un input_number pour voir la consigne calculée.
       selector:
         entity:
           domain: input_number
     mode_display_helper:
-      name: Helper pour afficher le mode réel (input_text)
-      description: Entité pour stocker le mode actif (ex: boost, confort...)
+      name: Helper affichage Mode Réel (input_text)
+      description: Créez un input_text pour voir le mode actif (ex: Boost).
       selector:
         entity:
           domain: input_text
 
+    # Paramètres
     comfort_temp:
       name: Température confort
       default: 21
@@ -61,7 +60,7 @@ blueprint:
         number:
           min: 5
           max: 30
-          step: 0.1
+          step: 0.5
     eco_temp:
       name: Température éco
       default: 19
@@ -69,7 +68,7 @@ blueprint:
         number:
           min: 5
           max: 30
-          step: 0.1
+          step: 0.5
     night_temp:
       name: Température nuit
       default: 18
@@ -77,7 +76,7 @@ blueprint:
         number:
           min: 5
           max: 30
-          step: 0.1
+          step: 0.5
     away_temp:
       name: Température absent
       default: 17
@@ -85,7 +84,7 @@ blueprint:
         number:
           min: 5
           max: 30
-          step: 0.1
+          step: 0.5
     boost_temp:
       name: Température boost
       default: 23
@@ -93,9 +92,9 @@ blueprint:
         number:
           min: 5
           max: 30
-          step: 0.1
+          step: 0.5
     outdoor_reference:
-      name: Température extérieure de référence
+      name: Température ext. référence (15°C par défaut)
       default: 15
       selector:
         number:
@@ -103,20 +102,20 @@ blueprint:
           max: 30
           step: 1
     climate_factor:
-      name: Facteur correction climatique
+      name: Facteur climatique (0.1 = fort, 0 = désactivé)
       default: 0.1
       selector:
         number:
           min: 0
-          max: 1
+          max: 2
           step: 0.01
     hysteresis:
       name: Hystérésis
-      default: 0.2
+      default: 0.5
       selector:
         number:
-          min: 0
-          max: 5
+          min: 0.1
+          max: 2.0
           step: 0.1
     night_start:
       name: Heure début nuit
@@ -137,95 +136,93 @@ trigger:
   - platform: state
     entity_id: !input temp_sensor
   - platform: state
-    entity_id: !input weather_entity
-  - platform: state
     entity_id: !input mode_select
   - platform: state
-    entity_id: !input presence_tracker
-  - platform: state
     entity_id: !input boost_button
+  # Pour la météo et le tracker, on évite de trigger trop souvent, 
+  # mais on peut les laisser si besoin de réactivité immédiate.
 
 action:
   ##########################################################
-  # 1. MAPPING DES INPUTS VERS DES VARIABLES
-  # C'est ici que l'erreur est corrigée : on assigne les !input
-  # à des variables utilisables par Jinja ensuite.
+  # ÉTAPE 1 : MAPPER LES INPUTS DANS DES VARIABLES
+  # C'est ICI que l'erreur "unexpected char !" est corrigée.
+  # On n'utilise PAS de {{ }} ici, juste du YAML pur.
   ##########################################################
   - variables:
       # Entités
       entity_temp: !input temp_sensor
       entity_weather: !input weather_entity
-      entity_boost: !input boost_button
+      entity_heater: !input heater_switch
       entity_tracker: !input presence_tracker
       entity_mode: !input mode_select
-      entity_heater: !input heater_switch
+      entity_boost: !input boost_button
       entity_target_helper: !input target_temp_helper
       entity_mode_helper: !input mode_display_helper
       
-      # Valeurs numériques
-      val_boost_temp: !input boost_temp
-      val_hysteresis: !input hysteresis
-      val_comfort: !input comfort_temp
-      val_eco: !input eco_temp
-      val_night: !input night_temp
-      val_away: !input away_temp
-      val_outdoor_ref: !input outdoor_reference
-      val_climate_factor: !input climate_factor
+      # Valeurs Numériques
+      conf_boost: !input boost_temp
+      conf_comfort: !input comfort_temp
+      conf_eco: !input eco_temp
+      conf_night: !input night_temp
+      conf_away: !input away_temp
+      conf_outdoor_ref: !input outdoor_reference
+      conf_climate_factor: !input climate_factor
+      conf_hysteresis: !input hysteresis
       
-      # Temps
-      time_night_start: !input night_start
-      time_night_end: !input night_end
+      # Horaires
+      time_start: !input night_start
+      time_end: !input night_end
 
   ##########################################################
-  # 2. CALCULS JINJA (Utilisant les variables ci-dessus)
+  # ÉTAPE 2 : CALCULS JINJA
+  # On utilise les variables définies ci-dessus (entity_temp, etc.)
   ##########################################################
   - variables:
       inside_temp: "{{ states(entity_temp) | float(0) }}"
       outside_temp: "{{ state_attr(entity_weather, 'temperature') | float(0) }}"
-      is_boost_on: "{{ is_state(entity_boost, 'on') }}"
+      is_boost: "{{ is_state(entity_boost, 'on') }}"
       current_mode: "{{ states(entity_mode) }}"
       is_home: "{{ is_state(entity_tracker, 'home') }}"
       now_str: "{{ now().strftime('%H:%M:%S') }}"
 
   ##########################################################
-  # PRIORITÉ AU BOOST
+  # LOGIQUE : BOOST PRIORITAIRE
   ##########################################################
   - choose:
-      - conditions: "{{ is_boost_on }}"
+      - conditions: "{{ is_boost }}"
         sequence:
           - variables:
-              target_temp: "{{ val_boost_temp | float }}"
-              mode_reel: "boost"
+              target: "{{ conf_boost | float }}"
           
-          # Logique ON/OFF Boost
+          # Action Switch
           - choose:
-              - conditions: "{{ inside_temp < (target_temp - val_hysteresis) }}"
+              - conditions: "{{ inside_temp < (target - conf_hysteresis) }}"
                 sequence:
                   - service: switch.turn_on
                     target:
                       entity_id: !input heater_switch
-              - conditions: "{{ inside_temp > (target_temp + val_hysteresis) }}"
+              - conditions: "{{ inside_temp > (target + conf_hysteresis) }}"
                 sequence:
                   - service: switch.turn_off
                     target:
                       entity_id: !input heater_switch
           
-          # Mise à jour des helpers
+          # Mise à jour Helpers
           - service: input_number.set_value
             target:
               entity_id: !input target_temp_helper
             data:
-              value: "{{ target_temp }}"
+              value: "{{ target }}"
           - service: input_text.set_value
             target:
               entity_id: !input mode_display_helper
             data:
-              value: "{{ mode_reel }}"
+              value: "BOOST"
               
-          - stop: "Boost prioritaire activé"
+          - stop: "Mode Boost actif"
 
   ##########################################################
-  # AUTO-ABSENCE
+  # LOGIQUE : AUTO-ABSENCE
   ##########################################################
   - choose:
       - conditions: "{{ not is_home }}"
@@ -244,26 +241,25 @@ action:
               option: "eco"
 
   ##########################################################
-  # MODE NUIT AUTOMATIQUE (Logique corrigée)
+  # LOGIQUE : MODE NUIT (Gestion minuit incluse)
   ##########################################################
   - variables:
-      # Calcul si on est en période nuit, gère le passage minuit (ex: 23h -> 07h)
-      is_night_time: >-
-        {% if time_night_start > time_night_end %}
-          {{ now_str >= time_night_start or now_str <= time_night_end }}
+      is_night: >-
+        {% if time_start > time_end %}
+          {{ now_str >= time_start or now_str <= time_end }}
         {% else %}
-          {{ time_night_start <= now_str <= time_night_end }}
+          {{ time_start <= now_str <= time_end }}
         {% endif %}
-
+  
   - choose:
-      - conditions: "{{ is_night_time }}"
+      - conditions: "{{ is_night }}"
         sequence:
           - service: input_select.select_option
             target:
               entity_id: !input mode_select
             data:
               option: "nuit"
-      - conditions: "{{ not is_night_time and current_mode == 'nuit' }}"
+      - conditions: "{{ not is_night and current_mode == 'nuit' }}"
         sequence:
           - service: input_select.select_option
             target:
@@ -272,48 +268,53 @@ action:
               option: "eco"
 
   ##########################################################
-  # CALCUL CONSIGNE FINALE
+  # LOGIQUE : CALCUL CONSIGNE FINALE
   ##########################################################
-  # On rafraîchit la variable mode car elle a pu changer ci-dessus
   - variables:
+      # On relit le mode car il a pu changer (nuit/absent)
       final_mode: "{{ states(entity_mode) }}"
-      base_target: >-
-        {% if final_mode == 'confort' %} {{ val_comfort }}
-        {% elif final_mode == 'eco' %} {{ val_eco }}
-        {% elif final_mode == 'nuit' %} {{ val_night }}
-        {% elif final_mode == 'absent' %} {{ val_away }}
-        {% else %} {{ val_comfort }} {% endif %}
       
-      diff: "{{ (val_outdoor_ref | float) - outside_temp }}"
+      base_target: >-
+        {% if final_mode == 'confort' %} {{ conf_comfort }}
+        {% elif final_mode == 'eco' %} {{ conf_eco }}
+        {% elif final_mode == 'nuit' %} {{ conf_night }}
+        {% elif final_mode == 'absent' %} {{ conf_away }}
+        {% else %} {{ conf_comfort }} {% endif %}
+      
+      diff: "{{ (conf_outdoor_ref | float) - outside_temp }}"
+      # Si diff > 0 (il fait plus froid que la ref), on chauffe plus
       climate_corr: >-
         {% if diff > 0 %}
-          {{ diff * (val_climate_factor | float) }}
+          {{ diff * (conf_climate_factor | float) }}
         {% else %} 0 {% endif %}
       
-      target_temp: "{{ (base_target | float) + (climate_corr | float) }}"
+      final_target: "{{ (base_target | float) + (climate_corr | float) }}"
 
   ##########################################################
-  # ENREGISTREMENT ET COMMANDE
+  # ACTIONS FINALES
   ##########################################################
+  
+  # 1. Mise à jour des helpers pour affichage
   - service: input_number.set_value
     target:
       entity_id: !input target_temp_helper
     data:
-      value: "{{ target_temp | round(1) }}"
-
+      value: "{{ final_target | round(1) }}"
+      
   - service: input_text.set_value
     target:
       entity_id: !input mode_display_helper
     data:
       value: "{{ final_mode }}"
 
+  # 2. Pilotage du radiateur
   - choose:
-      - conditions: "{{ inside_temp < (target_temp - val_hysteresis) }}"
+      - conditions: "{{ inside_temp < (final_target - conf_hysteresis) }}"
         sequence:
           - service: switch.turn_on
             target:
               entity_id: !input heater_switch
-      - conditions: "{{ inside_temp > (target_temp + val_hysteresis) }}"
+      - conditions: "{{ inside_temp > (final_target + conf_hysteresis) }}"
         sequence:
           - service: switch.turn_off
             target:
