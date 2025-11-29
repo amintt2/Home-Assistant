@@ -1,5 +1,5 @@
 blueprint:
-  name: Thermostat Complet (Fix Syntax)
+  name: Thermostat Complet (Final Fix)
   description: >
     Thermostat avec correction syntaxique stricte.
     Gère: Boost, Absence, Nuit (passage minuit inclus), Météo.
@@ -28,7 +28,7 @@ blueprint:
           domain: device_tracker
     mode_select:
       name: Mode chauffage (input_select)
-      description: Options requises -> confort, eco, nuit, absent
+      description: "Options requises : confort, eco, nuit, absent"
       selector:
         entity:
           domain: input_select
@@ -38,16 +38,16 @@ blueprint:
         entity:
           domain: input_boolean
     
-    # Helpers obligatoires pour stocker les résultats
+    # Helpers obligatoires
     target_temp_helper:
       name: Helper stockage Consigne (input_number)
-      description: Créez un input_number pour voir la consigne calculée.
+      description: "Créez un input_number pour voir la consigne calculée."
       selector:
         entity:
           domain: input_number
     mode_display_helper:
       name: Helper affichage Mode Réel (input_text)
-      description: Créez un input_text pour voir le mode actif (ex: Boost).
+      description: "Créez un input_text pour voir le mode actif (ex: Boost)."
       selector:
         entity:
           domain: input_text
@@ -94,7 +94,7 @@ blueprint:
           max: 30
           step: 0.5
     outdoor_reference:
-      name: Température ext. référence (15°C par défaut)
+      name: "Température ext. référence (15°C par défaut)"
       default: 15
       selector:
         number:
@@ -102,7 +102,7 @@ blueprint:
           max: 30
           step: 1
     climate_factor:
-      name: Facteur climatique (0.1 = fort, 0 = désactivé)
+      name: "Facteur climatique (0.1 = fort, 0 = désactivé)"
       default: 0.1
       selector:
         number:
@@ -139,14 +139,10 @@ trigger:
     entity_id: !input mode_select
   - platform: state
     entity_id: !input boost_button
-  # Pour la météo et le tracker, on évite de trigger trop souvent, 
-  # mais on peut les laisser si besoin de réactivité immédiate.
 
 action:
   ##########################################################
   # ÉTAPE 1 : MAPPER LES INPUTS DANS DES VARIABLES
-  # C'est ICI que l'erreur "unexpected char !" est corrigée.
-  # On n'utilise PAS de {{ }} ici, juste du YAML pur.
   ##########################################################
   - variables:
       # Entités
@@ -175,7 +171,6 @@ action:
 
   ##########################################################
   # ÉTAPE 2 : CALCULS JINJA
-  # On utilise les variables définies ci-dessus (entity_temp, etc.)
   ##########################################################
   - variables:
       inside_temp: "{{ states(entity_temp) | float(0) }}"
