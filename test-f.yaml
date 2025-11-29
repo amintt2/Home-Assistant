@@ -1,9 +1,14 @@
 blueprint:
-  name: Thermostat intelligent ON/OFF (météo, modes, boost, présence)
+  name: Thermostat complet ON/OFF avec boost, nuit, météo
   description: >
-    Thermostat avancé ON/OFF avec : confort/eco/nuit/absent, boost manuel,
-    compensation climatique via météo, auto-absence, hystérésis et 
-    déclenchement toutes les 30 secondes.
+    Thermostat ON/OFF avec :
+    - Compensation climatique via météo
+    - Déclenchement toutes les 30s
+    - Auto-absence selon zone + device_tracker
+    - Mode nuit automatique
+    - Boost manuel prioritaire
+    - Hystérésis
+    - Sensors pour consigne, mode réel et température extérieure
   domain: automation
 
   input:
@@ -20,7 +25,7 @@ blueprint:
           domain: switch
 
     weather_entity:
-      name: Entité météo Home Assistant
+      name: Entité météo
       selector:
         entity:
           domain: weather
@@ -38,62 +43,61 @@ blueprint:
           domain: zone
 
     mode_select:
-      name: Sélecteur de mode chauffage
-      description: "Doit contenir : confort, eco, nuit, absent"
+      name: Mode chauffage (input_select)
       selector:
         entity:
           domain: input_select
 
     boost_button:
-      name: Bouton Boost (input_boolean)
+      name: Bouton Boost
       selector:
         entity:
           domain: input_boolean
 
     comfort_temp:
-      name: Température Confort
+      name: Température confort
       default: 21
       selector:
         number:
           min: 5
           max: 30
-          step: 0.5
+          step: 0.1
 
     eco_temp:
-      name: Température Eco
+      name: Température éco
       default: 19
       selector:
         number:
           min: 5
           max: 30
-          step: 0.5
+          step: 0.1
 
     night_temp:
-      name: Température Nuit
+      name: Température nuit
       default: 18
       selector:
         number:
           min: 5
           max: 30
-          step: 0.5
+          step: 0.1
 
     away_temp:
-      name: Température Absent
+      name: Température absent
       default: 17
       selector:
         number:
           min: 5
           max: 30
-          step: 0.5
+          step: 0.1
 
     boost_temp:
-      name: Température Boost
-      default: 22.5
+      name: Température boost
+      default: 23
       selector:
         number:
           min: 5
           max: 30
-          step: 0.5
+          step: 0.1
 
     outdoor_reference:
       name: Température extérieure de référence
@@ -122,48 +126,107 @@ blueprint:
           max: 5
           step: 0.1
 
+    night_start:
+      name: Heure début nuit
+      default: "23:00:00"
+      selector:
+        time:
+
+    night_end:
+      name: Heure fin nuit
+      default: "07:00:00"
+      selector:
+        time:
+
 mode: single
 
 ##########################################################
-# TRIGGERS (toutes les 30 secondes)
+# TRIGGERS
 ##########################################################
 trigger:
   - platform: time_pattern
     seconds: "/30"
-
   - platform: state
     entity_id: !input temp_sensor
-
   - platform: state
     entity_id: !input weather_entity
-
   - platform: state
     entity_id: !input mode_select
-
   - platform: state
     entity_id: !input presence_tracker
-
   - platform: state
     entity_id: !input boost_button
 
 action:
 
   ##########################################################
-  # AUTO-ABSENCE BASÉ SUR PRÉSENCE
+  # VARIABLES DE BASE
+  ##########################################################
+  - variables:
+      inside_temp: "{{ states[inputs.temp_sensor].state | float }}"
+      outside_temp: "{{ state_attr(inputs.weather_entity,'temperature') | float }}"
+      hys: "{{ inputs.hysteresis | float }}"
+      boost: "{{ is_state(inputs.boost_button,'on') }}"
+      now_time: "{{ now().strftime('%H:%M:%S') }}"
+      mode: "{{ states[inputs.mode_select].state }}"
+
+  ##########################################################
+  # PRIORITÉ AU BOOST
   ##########################################################
   - choose:
-      - conditions: >
-          {{ not is_state(inputs.presence_tracker, "home") }}
+      - conditions: "{{ boost }}"
+        sequence:
+          - variables:
+              target_temp: "{{ inputs.boost_temp | float }}"
+              mode_reel: "boost"
+
+          - choose:
+              - conditions: "{{ inside_temp < (target_temp - hys) }}"
+                sequence:
+                  - service: switch.turn_on
+                    target:
+                      entity_id: !input heater_switch
+                  - service: system_log.write
+                    data:
+                      level: info
+                      message: "Boost → Chauffage ON"
+
+              - conditions: "{{ inside_temp > (target_temp + hys) }}"
+                sequence:
+                  - service: switch.turn_off
+                    target:
+                      entity_id: !input heater_switch
+                  - service: system_log.write
+                    data:
+                      level: info
+                      message: "Boost → Chauffage OFF"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.temp_chauffage_cible
+            data:
+              value: "{{ target_temp }}"
+
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.mode_chauffage_reel
+            data:
+              value: "{{ mode_reel }}"
+
+          - stop: "Boost prioritaire → fin de l'automatisation"
+
+  ##########################################################
+  # AUTO-ABSENCE
+  ##########################################################
+  - choose:
+      - conditions: "{{ not is_state(inputs.presence_tracker,'home') }}"
         sequence:
           - service: input_select.select_option
             target:
               entity_id: !input mode_select
             data:
               option: "absent"
-
-      - conditions: >
-          {{ is_state(inputs.presence_tracker, "home") 
-             and states[inputs.mode_select].state == "absent" }}
+      - conditions: "{{ is_state(inputs.presence_tracker,'home') and states[inputs.mode_select].state=='absent' }}"
         sequence:
           - service: input_select.select_option
             target:
@@ -172,50 +235,61 @@ action:
               option: "eco"
 
   ##########################################################
-  # VARIABLES POUR LE CALCUL DES CONSIGNES
+  # MODE NUIT AUTOMATIQUE
+  ##########################################################
+  - choose:
+      - conditions: "{{ inputs.night_start <= now_time <= inputs.night_end }}"
+        sequence:
+          - service: input_select.select_option
+            target:
+              entity_id: !input mode_select
+            data:
+              option: "nuit"
+      - conditions: "{{ not (inputs.night_start <= now_time <= inputs.night_end) and states[inputs.mode_select].state=='nuit' }}"
+        sequence:
+          - service: input_select.select_option
+            target:
+              entity_id: !input mode_select
+            data:
+              option: "eco"
+
+  ##########################################################
+  # CALCUL CONSIGNE
   ##########################################################
   - variables:
-      mode: "{{ states[inputs.mode_select].state }}"
-      inside_temp: "{{ states[inputs.temp_sensor].state | float }}"
-      outside_temp: "{{ state_attr(inputs.weather_entity, 'temperature') | float }}"
-      hys: "{{ inputs.hysteresis | float }}"
-      boost: "{{ is_state(inputs.boost_button, 'on') }}"
-
       base_target: >-
-        {% if boost %}
-          {{ inputs.boost_temp }}
-        {% elif mode == 'confort' %}
-          {{ inputs.comfort_temp }}
-        {% elif mode == 'eco' %}
-          {{ inputs.eco_temp }}
-        {% elif mode == 'nuit' %}
-          {{ inputs.night_temp }}
-        {% else %}
-          {{ inputs.away_temp }}
-        {% endif %}
+        {% if mode=='confort' %} {{ inputs.comfort_temp }}
+        {% elif mode=='eco' %} {{ inputs.eco_temp }}
+        {% elif mode=='nuit' %} {{ inputs.night_temp }}
+        {% elif mode=='absent' %} {{ inputs.away_temp }}
+        {% else %} {{ inputs.comfort_temp }} {% endif %}
 
       diff: "{{ (inputs.outdoor_reference | float) - outside_temp }}"
       climate_corr: >-
         {% if diff > 0 %}
           {{ diff * (inputs.climate_factor | float) }}
-        {% else %}
-          0
-        {% endif %}
+        {% else %} 0 {% endif %}
 
       target_temp: "{{ base_target + climate_corr }}"
+      mode_reel: "{{ mode }}"
 
   ##########################################################
-  # LOG
+  # ENREGISTREMENT DES VALEURS DANS LES SENSORS
   ##########################################################
-  - service: system_log.write
+  - service: input_number.set_value
+    target:
+      entity_id: input_number.temp_chauffage_cible
     data:
-      level: info
-      message: >
-        MODE={{ mode }} | INSIDE={{ inside_temp }} | OUTSIDE={{ outside_temp }} |
-        TARGET={{ target_temp }} | BOOST={{ boost }} | HYS={{ hys }}
+      value: "{{ target_temp }}"
+
+  - service: input_text.set_value
+    target:
+      entity_id: input_text.mode_chauffage_reel
+    data:
+      value: "{{ mode_reel }}"
 
   ##########################################################
-  # COMMANDES AVEC HYSTÉRÉSIS
+  # COMMANDE CHAUFFAGE AVEC HYSTÉRÉSIS
   ##########################################################
   - choose:
       - conditions: "{{ inside_temp < (target_temp - hys) }}"
@@ -227,7 +301,6 @@ action:
             data:
               level: info
               message: "Chauffage ON ({{ inside_temp }} < {{ target_temp }} - {{ hys }})"
-
       - conditions: "{{ inside_temp > (target_temp + hys) }}"
         sequence:
           - service: switch.turn_off
