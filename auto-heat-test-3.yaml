@@ -1,12 +1,8 @@
 blueprint:
   name: Thermostat ON/OFF météo + auto-absence + logs
   description: >
-    Thermostat simple ON/OFF avec :
-    - compensation climatique via météo
-    - détecteur automatique d'absence
-    - déclenchement toutes les minutes
-    - logs détaillés
-    - notification en cas d'erreur
+    Thermostat ON/OFF avec compensation météo, auto-absence, déclenchement chaque minute,
+    logs et notification en cas d’erreur.
   domain: automation
 
   input:
@@ -47,10 +43,11 @@ blueprint:
           domain: zone
 
     notify_service:
-      name: Service de notification
+      name: Service de notification (à écrire manuellement)
       description: "Exemple : notify.mobile_app_iphone"
+      default: "notify.mobile_app_iphone"
       selector:
-        action: {}
+        text:
 
     comfort_temp:
       name: Température Confort
@@ -112,7 +109,6 @@ trigger:
   - platform: state
     entity_id: !input presence_tracker
 
-  # Déclenchement toutes les minutes
   - platform: time_pattern
     minutes: "*"
 
@@ -124,32 +120,33 @@ action:
   - variables:
       inside_raw: "{{ states[inputs.temp_sensor].state }}"
       outside_raw: "{{ state_attr(inputs.weather_entity, 'temperature') }}"
+      notify_service: "{{ inputs.notify_service }}"
 
   - choose:
       - conditions: "{{ inside_raw in ['unknown','unavailable','none','None'] }}"
         sequence:
-          - service: !input notify_service
+          - service: "{{ notify_service }}"
             data:
-              message: "ERREUR : Le capteur de température intérieure est indisponible."
+              message: "ERREUR : Capteur intérieur indisponible"
           - service: system_log.write
             data:
               level: error
-              message: "Thermostat ERROR: inside temperature sensor unavailable."
-          - stop: "Température intérieure invalide"
+              message: "Thermostat: Capteur intérieur indisponible"
+          - stop: "Erreur capteur intérieur"
 
       - conditions: "{{ outside_raw in ['unknown','unavailable', None] }}"
         sequence:
-          - service: !input notify_service
+          - service: "{{ notify_service }}"
             data:
-              message: "ERREUR : La météo ne retourne pas la température extérieure."
+              message: "ERREUR : Température extérieure indisponible"
           - service: system_log.write
             data:
               level: error
-              message: "Thermostat ERROR: external temperature unavailable."
-          - stop: "Température extérieure invalide"
+              message: "Thermostat: Température météo indisponible"
+          - stop: "Erreur température extérieure"
 
   ####################################################
-  # AUTO-MODE ABSENT BASÉ SUR LA PRÉSENCE
+  # GESTION AUTOMATIQUE DU MODE ABSENT
   ####################################################
   - choose:
       - conditions: "{{ not is_state(inputs.presence_tracker, 'home') }}"
@@ -162,7 +159,7 @@ action:
           - service: system_log.write
             data:
               level: info
-              message: "Thermostat: Mode absent activé (départ de la zone)."
+              message: "Thermostat: Passage en mode absent"
 
       - conditions: >
           {{ is_state(inputs.presence_tracker, 'home') 
@@ -176,10 +173,10 @@ action:
           - service: system_log.write
             data:
               level: info
-              message: "Thermostat: Retour à la maison → mode eco."
+              message: "Thermostat: Retour à domicile → mode eco"
 
   ####################################################
-  # RÉGULATION + COMPENSATION CLIMATIQUE
+  # CALCUL COMPENSATION CLIMATIQUE
   ####################################################
   - variables:
       mode: "{{ states[inputs.mode_select].state }}"
@@ -193,7 +190,7 @@ action:
         {% else %}
           {{ inputs.away_temp }}
         {% endif %}
-      diff: "{{ (inputs.outdoor_reference | float) - outside_temp }}"
+      diff: "{{ inputs.outdoor_reference - outside_temp }}"
       climate_correction: >-
         {% if diff > 0 %}
           {{ diff * (inputs.climate_factor | float) }}
@@ -206,14 +203,14 @@ action:
     data:
       level: info
       message: >
-        Thermostat: Mode={{ mode }},
-        Inside={{ inside_temp }}°C,
-        Outside={{ outside_temp }}°C,
-        Target={{ target_temp }}°C
-        (base={{ base_target_temp }} + corr={{ climate_correction }})
+        Thermostat calc:
+        inside={{ inside_temp }}°C,
+        outside={{ outside_temp }}°C,
+        target={{ target_temp }}°C,
+        base={{ base_target_temp }} + corr={{ climate_correction }}
 
   ####################################################
-  # COMMANDE DU RADIATEUR
+  # COMMANDE DU CHAUFFAGE
   ####################################################
   - choose:
       - conditions: "{{ inside_temp < target_temp }}"
@@ -224,7 +221,7 @@ action:
           - service: system_log.write
             data:
               level: info
-              message: "Thermostat: Chauffage → ON"
+              message: "Thermostat: Chauffage ON"
 
       - conditions: "{{ inside_temp > target_temp }}"
         sequence:
@@ -234,4 +231,4 @@ action:
           - service: system_log.write
             data:
               level: info
-              message: "Thermostat: Chauffage → OFF"
+              message: "Thermostat: Chauffage OFF"
