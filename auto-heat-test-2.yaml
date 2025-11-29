@@ -1,0 +1,171 @@
+blueprint:
+  name: Thermostat ON/OFF avec météo + auto-absence
+  description: >
+    Régulation simple ON/OFF avec compensation climatique via météo Home Assistant
+    et gestion automatique du mode absent selon présence (device_tracker).
+  domain: automation
+
+  input:
+    temp_sensor:
+      name: Capteur de température intérieure
+      selector:
+        entity:
+          domain: sensor
+
+    heater_switch:
+      name: Switch du radiateur
+      selector:
+        entity:
+          domain: switch
+
+    weather_entity:
+      name: Source météo Home Assistant
+      description: "Ex: weather.ma_ville"
+      selector:
+        entity:
+          domain: weather
+
+    mode_select:
+      name: Selecteur de mode chauffage
+      description: "input_select avec: confort, eco, absent"
+      selector:
+        entity:
+          domain: input_select
+
+    presence_tracker:
+      name: Tracker de présence (ton iPhone)
+      selector:
+        entity:
+          domain: device_tracker
+
+    home_zone:
+      name: Zone Maison
+      selector:
+        entity:
+          domain: zone
+
+    comfort_temp:
+      name: Température Confort
+      default: 21
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+
+    eco_temp:
+      name: Température Eco
+      default: 19
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+
+    away_temp:
+      name: Température Absent
+      default: 17
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+
+    outdoor_reference:
+      name: Température extérieure de référence
+      default: 15
+      selector:
+        number:
+          min: -10
+          max: 30
+          step: 1
+
+    climate_factor:
+      name: Facteur de compensation climatique
+      default: 0.1
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: !input temp_sensor
+
+  - platform: state
+    entity_id: !input weather_entity
+
+  - platform: state
+    entity_id: !input mode_select
+
+  - platform: state
+    entity_id: !input presence_tracker
+
+action:
+
+  ####################################################
+  # AUTO-MODE ABSENT BASÉ SUR LA PRÉSENCE
+  ####################################################
+  - choose:
+      - conditions: >
+          {{ not is_state(inputs.presence_tracker, 'home') }}
+        sequence:
+          - service: input_select.select_option
+            target:
+              entity_id: !input mode_select
+            data:
+              option: 'absent'
+
+      - conditions: >
+          {{ is_state(inputs.presence_tracker, 'home') and states[inputs.mode_select].state == 'absent' }}
+        sequence:
+          - service: input_select.select_option
+            target:
+              entity_id: !input mode_select
+            data:
+              option: 'eco'
+
+  ####################################################
+  # RÉGULATION AVEC COMPENSATION CLIMATIQUE
+  ####################################################
+  - variables:
+      mode: "{{ states[inputs.mode_select].state }}"
+      inside_temp: "{{ states[inputs.temp_sensor].state | float }}"
+      outside_temp: "{{ state_attr(inputs.weather_entity, 'temperature') | float }}"
+
+      base_target_temp: >-
+        {% if mode == 'confort' %}
+          {{ inputs.comfort_temp }}
+        {% elif mode == 'eco' %}
+          {{ inputs.eco_temp }}
+        {% else %}
+          {{ inputs.away_temp }}
+        {% endif %}
+
+      ext_ref: "{{ inputs.outdoor_reference }}"
+      factor: "{{ inputs.climate_factor }}"
+      diff: "{{ (ext_ref | float) - outside_temp }}"
+      climate_correction: >-
+        {% if diff > 0 %}
+          {{ diff * (factor | float) }}
+        {% else %}
+          0
+        {% endif %}
+
+      target_temp: "{{ base_target_temp + climate_correction }}"
+
+  - choose:
+      - conditions: "{{ inside_temp < target_temp }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input heater_switch
+
+      - conditions: "{{ inside_temp > target_temp }}"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input heater_switch
