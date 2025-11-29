@@ -1,0 +1,132 @@
+blueprint:
+  name: Thermostat simple avec compensation climatique
+  description: >
+    Régulation ON/OFF pour un radiateur avec 1 capteur intérieur, 1 capteur extérieur,
+    et mode (confort / eco / absent). Ajoute automatiquement une correction selon la
+    température extérieure (compensation climatique).
+  domain: automation
+  input:
+    temp_sensor:
+      name: Capteur de température intérieure
+      selector:
+        entity:
+          domain: sensor
+
+    ext_temp_sensor:
+      name: Capteur de température extérieure
+      selector:
+        entity:
+          domain: sensor
+
+    heater_switch:
+      name: Switch du radiateur
+      selector:
+        entity:
+          domain: switch
+
+    mode_select:
+      name: Mode de chauffage
+      description: "input_select: confort / eco / absent"
+      selector:
+        entity:
+          domain: input_select
+
+    comfort_temp:
+      name: Température Confort (sans correction)
+      default: 21
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+
+    eco_temp:
+      name: Température Eco (sans correction)
+      default: 19
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+
+    away_temp:
+      name: Température Absent (sans correction)
+      default: 17
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+
+    outdoor_reference:
+      name: Température extérieure de référence (au-dessus = aucune correction)
+      description: "Typiquement 15°C"
+      default: 15
+      selector:
+        number:
+          min: -10
+          max: 30
+          step: 1
+
+    climate_factor:
+      name: Facteur de compensation
+      description: "0.1 = +0.1°C de consigne par °C manquante dehors"
+      default: 0.1
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: !input temp_sensor
+  - platform: state
+    entity_id: !input ext_temp_sensor
+  - platform: state
+    entity_id: !input mode_select
+
+action:
+  - variables:
+      mode: "{{ states[inputs.mode_select].state }}"
+      inside_temp: "{{ states[inputs.temp_sensor].state | float }}"
+      outside_temp: "{{ states[inputs.ext_temp_sensor].state | float }}"
+
+      # Température de base selon le mode
+      base_target_temp: >-
+        {% if mode == 'confort' %}
+          {{ inputs.comfort_temp }}
+        {% elif mode == 'eco' %}
+          {{ inputs.eco_temp }}
+        {% else %}
+          {{ inputs.away_temp }}
+        {% endif %}
+
+      # Calcul compensation climatique:
+      ext_ref: "{{ inputs.outdoor_reference }}"
+      factor: "{{ inputs.climate_factor }}"
+      diff: "{{ (ext_ref | float) - outside_temp }}"
+      climate_correction: >-
+        {% if diff > 0 %}
+          {{ diff * (factor | float) }}
+        {% else %}
+          0
+        {% endif %}
+
+      # Consigne finale corrigée
+      target_temp: "{{ base_target_temp + climate_correction }}"
+
+  - choose:
+      - conditions: "{{ inside_temp < target_temp }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input heater_switch
+
+      - conditions: "{{ inside_temp > target_temp }}"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input heater_switch
