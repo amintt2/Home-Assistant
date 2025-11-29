@@ -1,0 +1,372 @@
+blueprint:
+  name: Thermostat avancé ON/OFF – météo, auto-absence, nuit, boost, hystérésis
+  description: >
+    Thermostat ON/OFF complet :
+    - Compensation climatique via météo
+    - Déclenchement toutes les minutes
+    - Auto-absence selon zone + device_tracker
+    - Mode nuit automatique selon horaires
+    - Boost manuel 30 minutes via input_boolean
+    - Hystérésis configurable
+    - Logs détaillés
+  domain: automation
+
+  input:
+
+    ############################################################
+    # CAPTEURS & COMMANDES
+    ############################################################
+    temp_sensor:
+      name: Capteur température intérieure
+      selector:
+        entity:
+          domain: sensor
+
+    heater_switch:
+      name: Switch du radiateur
+      selector:
+        entity:
+          domain: switch
+
+    weather_entity:
+      name: Entité météo Home Assistant
+      selector:
+        entity:
+          domain: weather
+
+    mode_select:
+      name: Sélecteur des modes (confort/eco/absent/nuit)
+      selector:
+        entity:
+          domain: input_select
+
+    presence_tracker:
+      name: Tracker de présence
+      selector:
+        entity:
+          domain: device_tracker
+
+    home_zone:
+      name: Zone Maison
+      selector:
+        entity:
+          domain: zone
+
+    boost_boolean:
+      name: Bouton Boost (input_boolean)
+      selector:
+        entity:
+          domain: input_boolean
+
+
+
+    ############################################################
+    # CONFIG TEMPERATURES
+    ############################################################
+    comfort_temp:
+      name: Température Confort
+      default: 21
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.1
+
+    eco_temp:
+      name: Température Eco
+      default: 19
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.1
+
+    away_temp:
+      name: Température Absent
+      default: 17
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.1
+
+    night_temp:
+      name: Température Mode Nuit
+      default: 18
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.1
+
+    boost_temp:
+      name: Température Boost
+      default: 23
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.1
+
+
+
+    ############################################################
+    # COMPENSATION MÉTÉO + HYSTERESIS
+    ############################################################
+    outdoor_reference:
+      name: Température extérieure de référence
+      default: 15
+      selector:
+        number:
+          min: -10
+          max: 30
+          step: 1
+
+    climate_factor:
+      name: Facteur de compensation climatique
+      default: 0.1
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+
+    hysteresis:
+      name: Hystérésis
+      description: "Évite les ON/OFF rapides. Exemple : 0.2°C"
+      default: 0.2
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.1
+
+
+    ############################################################
+    # MODE NUIT – CRENEAUX
+    ############################################################
+    night_start:
+      name: Heure de début du mode nuit
+      default: "23:00:00"
+      selector:
+        time:
+
+    night_end:
+      name: Heure de fin du mode nuit
+      default: "07:00:00"
+      selector:
+        time:
+
+mode: single
+
+trigger:
+
+  # Capteurs
+  - platform: state
+    entity_id: !input temp_sensor
+  - platform: state
+    entity_id: !input weather_entity
+  - platform: state
+    entity_id: !input mode_select
+  - platform: state
+    entity_id: !input presence_tracker
+  - platform: state
+    entity_id: !input boost_boolean
+
+  # Tick chaque minute
+  - platform: time_pattern
+    minutes: "*"
+
+action:
+
+  ############################################################
+  # LECTURE DES VARIABLES
+  ############################################################
+  - variables:
+      inside_raw: "{{ states[inputs.temp_sensor].state }}"
+      outside_raw: "{{ state_attr(inputs.weather_entity, 'temperature') }}"
+      phone_home: "{{ is_state(inputs.presence_tracker, 'home') }}"
+      boost: "{{ is_state(inputs.boost_boolean, 'on') }}"
+      now_time: "{{ now().strftime('%H:%M:%S') }}"
+
+
+
+  ############################################################
+  # VALIDATION DES CAPTEURS
+  ############################################################
+  - choose:
+      - conditions: "{{ inside_raw in ['unknown','unavailable','none','None'] }}"
+        sequence:
+          - service: system_log.write
+            data:
+              level: error
+              message: "Thermostat ERROR: Capteur intérieur indisponible"
+          - stop
+
+      - conditions: "{{ outside_raw in ['unknown','unavailable', None] }}"
+        sequence:
+          - service: system_log.write
+            data:
+              level: error
+              message: "Thermostat ERROR: Température météo indisponible"
+          - stop
+
+
+
+  ############################################################
+  # AUTO-ABSENCE
+  ############################################################
+  - choose:
+      - conditions: "{{ not phone_home }}"
+        sequence:
+          - service: input_select.select_option
+            data:
+              option: 'absent'
+            target:
+              entity_id: !input mode_select
+          - service: system_log.write
+            data:
+              level: info
+              message: "Thermostat: Mode absent (départ de la zone)"
+
+      - conditions: >
+          {{ phone_home and states[inputs.mode_select].state == 'absent' }}
+        sequence:
+          - service: input_select.select_option
+            data:
+              option: 'eco'
+            target:
+              entity_id: !input mode_select
+          - service: system_log.write
+            data:
+              level: info
+              message: "Thermostat: Retour à la maison → mode eco"
+
+
+
+  ############################################################
+  # MODE NUIT AUTOMATIQUE
+  ############################################################
+  - choose:
+      - conditions: >
+          {{ inputs.night_start <= now_time <= inputs.night_end }}
+        sequence:
+          - service: input_select.select_option
+            data:
+              option: 'nuit'
+            target:
+              entity_id: !input mode_select
+          - service: system_log.write
+            data:
+              level: info
+              message: "Thermostat: Mode nuit automatique ON"
+
+      - conditions: >
+          {{ not (inputs.night_start <= now_time <= inputs.night_end)
+             and states[inputs.mode_select].state == 'nuit' }}
+        sequence:
+          - service: input_select.select_option
+            data:
+              option: 'eco'
+            target:
+              entity_id: !input mode_select
+          - service: system_log.write
+            data:
+              level: info
+              message: "Thermostat: Fin du mode nuit → eco"
+
+
+
+  ############################################################
+  # CALCUL TARGET TEMP
+  ############################################################
+  - variables:
+      mode: "{{ states[inputs.mode_select].state }}"
+      inside_temp: "{{ inside_raw | float }}"
+      outside_temp: "{{ outside_raw | float }}"
+      boost_on: "{{ boost }}"
+
+      base_target_temp: >-
+        {% if boost_on %}
+          {{ inputs.boost_temp }}
+        {% elif mode == 'confort' %}
+          {{ inputs.comfort_temp }}
+        {% elif mode == 'eco' %}
+          {{ inputs.eco_temp }}
+        {% elif mode == 'nuit' %}
+          {{ inputs.night_temp }}
+        {% else %}
+          {{ inputs.away_temp }}
+        {% endif %}
+
+      diff: "{{ inputs.outdoor_reference - outside_temp }}"
+      climate_correction: >-
+        {% if diff > 0 %}
+          {{ diff * (inputs.climate_factor | float) }}
+        {% else %}
+          0
+        {% endif %}
+
+      target_temp: "{{ base_target_temp + climate_correction }}"
+
+
+
+  ############################################################
+  # TIMER BOOST (AUTO 30 MIN)
+  ############################################################
+  - choose:
+      - conditions: "{{ boost_on }}"
+        sequence:
+          - delay: "00:30:00"
+          - service: input_boolean.turn_off
+            target:
+              entity_id: !input boost_boolean
+          - service: system_log.write
+            data:
+              level: info
+              message: "Thermostat: Fin du BOOST automatique"
+
+
+
+  ############################################################
+  # LOGS CALCUL
+  ############################################################
+  - service: system_log.write
+    data:
+      level: info
+      message: >
+        Thermostat:
+        inside={{ inside_temp }}°C,
+        outside={{ outside_temp }}°C,
+        target={{ target_temp }}°C,
+        base={{ base_target_temp }},
+        correction={{ climate_correction }}
+
+
+
+  ############################################################
+  # COMMANDE CHAUFFAGE (AVEC HYSTERESIS)
+  ############################################################
+  - variables:
+      hys: "{{ inputs.hysteresis | float }}"
+
+  - choose:
+      - conditions: "{{ inside_temp < (target_temp - hys) }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input heater_switch
+          - service: system_log.write
+            data:
+              level: info
+              message: "Thermostat: Chauffage ON"
+
+      - conditions: "{{ inside_temp > (target_temp + hys) }}"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input heater_switch
+          - service: system_log.write
+            data:
+              level: info
+              message: "Thermostat: Chauffage OFF"
