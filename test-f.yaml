@@ -1,5 +1,5 @@
 blueprint:
-  name: Thermostat complet ON/OFF avec boost, nuit, météo
+  name: Thermostat complet ON/OFF avec boost, nuit et météo
   description: >
     Thermostat ON/OFF avec :
     - Compensation climatique via météo
@@ -163,12 +163,12 @@ action:
   # VARIABLES DE BASE
   ##########################################################
   - variables:
-      inside_temp: "{{ states[inputs.temp_sensor].state | float }}"
-      outside_temp: "{{ state_attr(inputs.weather_entity,'temperature') | float }}"
-      hys: "{{ inputs.hysteresis | float }}"
-      boost: "{{ is_state(inputs.boost_button,'on') }}"
+      inside_temp: "{{ states[!input temp_sensor].state | float }}"
+      outside_temp: "{{ state_attr(!input weather_entity,'temperature') | float }}"
+      hys: "{{ !input hysteresis | float }}"
+      boost: "{{ is_state(!input boost_button,'on') }}"
       now_time: "{{ now().strftime('%H:%M:%S') }}"
-      mode: "{{ states[inputs.mode_select].state }}"
+      mode: "{{ states[!input mode_select].state }}"
 
   ##########################################################
   # PRIORITÉ AU BOOST
@@ -177,7 +177,7 @@ action:
       - conditions: "{{ boost }}"
         sequence:
           - variables:
-              target_temp: "{{ inputs.boost_temp | float }}"
+              target_temp: "{{ !input boost_temp | float }}"
               mode_reel: "boost"
 
           - choose:
@@ -219,14 +219,14 @@ action:
   # AUTO-ABSENCE
   ##########################################################
   - choose:
-      - conditions: "{{ not is_state(inputs.presence_tracker,'home') }}"
+      - conditions: "{{ not is_state(!input presence_tracker,'home') }}"
         sequence:
           - service: input_select.select_option
             target:
               entity_id: !input mode_select
             data:
               option: "absent"
-      - conditions: "{{ is_state(inputs.presence_tracker,'home') and states[inputs.mode_select].state=='absent' }}"
+      - conditions: "{{ is_state(!input presence_tracker,'home') and states[!input mode_select].state=='absent' }}"
         sequence:
           - service: input_select.select_option
             target:
@@ -238,14 +238,14 @@ action:
   # MODE NUIT AUTOMATIQUE
   ##########################################################
   - choose:
-      - conditions: "{{ inputs.night_start <= now_time <= inputs.night_end }}"
+      - conditions: "{{ !input night_start <= now_time <= !input night_end }}"
         sequence:
           - service: input_select.select_option
             target:
               entity_id: !input mode_select
             data:
               option: "nuit"
-      - conditions: "{{ not (inputs.night_start <= now_time <= inputs.night_end) and states[inputs.mode_select].state=='nuit' }}"
+      - conditions: "{{ not (!input night_start <= now_time <= !input night_end) and states[!input mode_select].state=='nuit' }}"
         sequence:
           - service: input_select.select_option
             target:
@@ -258,16 +258,16 @@ action:
   ##########################################################
   - variables:
       base_target: >-
-        {% if mode=='confort' %} {{ inputs.comfort_temp }}
-        {% elif mode=='eco' %} {{ inputs.eco_temp }}
-        {% elif mode=='nuit' %} {{ inputs.night_temp }}
-        {% elif mode=='absent' %} {{ inputs.away_temp }}
-        {% else %} {{ inputs.comfort_temp }} {% endif %}
+        {% if mode=='confort' %} {{ !input comfort_temp }}
+        {% elif mode=='eco' %} {{ !input eco_temp }}
+        {% elif mode=='nuit' %} {{ !input night_temp }}
+        {% elif mode=='absent' %} {{ !input away_temp }}
+        {% else %} {{ !input comfort_temp }} {% endif %}
 
-      diff: "{{ (inputs.outdoor_reference | float) - outside_temp }}"
+      diff: "{{ (!input outdoor_reference | float) - outside_temp }}"
       climate_corr: >-
         {% if diff > 0 %}
-          {{ diff * (inputs.climate_factor | float) }}
+          {{ diff * (!input climate_factor | float) }}
         {% else %} 0 {% endif %}
 
       target_temp: "{{ base_target + climate_corr }}"
