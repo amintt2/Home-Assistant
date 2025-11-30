@@ -1,0 +1,314 @@
+blueprint:
+  name: Thermostat Master (Planning Hebdo & Physique)
+  description: >
+    Gestion complète : 
+    1. Planning de retour travail sur 7 jours.
+    2. Préchauffage intelligent (Calcul physique du temps de montée).
+    3. Compensation météo & Modes.
+  domain: automation
+
+  input:
+    # --- CAPTEURS & ACTIONNEURS ---
+    temp_sensor:
+      name: T° Intérieure
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    weather_entity:
+      name: Météo Locale
+      selector:
+        entity:
+          domain: weather
+    heater_switch:
+      name: Radiateur
+      selector:
+        entity:
+          domain: switch
+    presence_tracker:
+      name: Présence
+      selector:
+        entity:
+          domain: device_tracker
+
+    # --- PLANNING HEBDOMADAIRE (7 Entrées) ---
+    time_mon:
+      name: Heure Retour Lundi
+      selector:
+        entity:
+          domain: input_datetime
+    time_tue:
+      name: Heure Retour Mardi
+      selector:
+        entity:
+          domain: input_datetime
+    time_wed:
+      name: Heure Retour Mercredi
+      selector:
+        entity:
+          domain: input_datetime
+    time_thu:
+      name: Heure Retour Jeudi
+      selector:
+        entity:
+          domain: input_datetime
+    time_fri:
+      name: Heure Retour Vendredi
+      selector:
+        entity:
+          domain: input_datetime
+    time_sat:
+      name: Heure Retour Samedi
+      selector:
+        entity:
+          domain: input_datetime
+    time_sun:
+      name: Heure Retour Dimanche
+      selector:
+        entity:
+          domain: input_datetime
+
+    # --- CONTROL & AFFICHAGE ---
+    mode_select:
+      name: Mode (input_select)
+      selector:
+        entity:
+          domain: input_select
+    boost_button:
+      name: Boost (input_boolean)
+      selector:
+        entity:
+          domain: input_boolean
+    
+    # Helpers d'affichage
+    display_status:
+      name: Affichage État (input_text)
+      description: "Affiche: PRECHAUFFE, ECO, CONFORT..."
+      selector:
+        entity:
+          domain: input_text
+    display_preheat_time:
+      name: Affichage Temps Calculé (input_text)
+      description: "Affiche le temps estimé pour atteindre la cible."
+      selector:
+        entity:
+          domain: input_text
+
+    # --- CONSIGNES (INPUT NUMBERS) ---
+    temp_conf:
+      name: Consigne Confort
+      selector:
+        entity:
+          domain: input_number
+    temp_eco:
+      name: Consigne Éco
+      selector:
+        entity:
+          domain: input_number
+    temp_boost:
+      name: Consigne Boost
+      selector:
+        entity:
+          domain: input_number
+    
+    # --- PHYSIQUE & REGLAGES ---
+    user_margin:
+      name: Marge Utilisateur (minutes)
+      description: "Ajoute ou retire du temps au calcul automatique (ex: 15min de sécurité)."
+      selector:
+        entity:
+          domain: input_number
+
+    heating_power:
+      name: Puissance de chauffe (°C/h)
+      description: "Vitesse de chauffe de la maison (défaut 1.5°C par heure)."
+      default: 1.5
+      selector:
+        number:
+          min: 0.1
+          max: 5
+          step: 0.1
+
+    insulation_loss:
+      name: Facteur isolation
+      description: "Impact du froid ext. (0.1 = bien isolé, 0.3 = mal isolé)."
+      default: 0.1
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+
+    outdoor_ref:
+      name: T° Extérieure Référence
+      default: 15
+      selector:
+        number:
+          min: -10
+          max: 30
+          step: 1
+
+mode: single
+
+trigger:
+  - platform: time_pattern
+    seconds: "/30"
+  - platform: state
+    entity_id: !input temp_sensor
+  - platform: state
+    entity_id: !input mode_select
+  - platform: state
+    entity_id: !input boost_button
+  # On recalcul si l'heure de retour change
+  - platform: state
+    entity_id: !input time_mon
+  - platform: state
+    entity_id: !input user_margin
+
+action:
+  # ----------------------------------------------------
+  # 1. CHARGEMENT DES VARIABLES
+  # ----------------------------------------------------
+  - variables:
+      e_temp: !input temp_sensor
+      e_ext: !input weather_entity
+      e_switch: !input heater_switch
+      e_tracker: !input presence_tracker
+      e_mode: !input mode_select
+      e_boost: !input boost_button
+      
+      # Planning
+      days_inputs: 
+        0: !input time_mon
+        1: !input time_tue
+        2: !input time_wed
+        3: !input time_thu
+        4: !input time_fri
+        5: !input time_sat
+        6: !input time_sun
+
+      # Helpers
+      h_status: !input display_status
+      h_preheat: !input display_preheat_time
+      
+      # Consignes
+      v_conf: !input temp_conf
+      v_eco: !input temp_eco
+      v_boost: !input temp_boost
+      v_margin: !input user_margin
+      
+      # Params Physique
+      p_power: !input heating_power
+      p_loss: !input insulation_loss
+      p_ref: !input outdoor_ref
+
+  # ----------------------------------------------------
+  # 2. CALCULS INTELLIGENTS
+  # ----------------------------------------------------
+  - variables:
+      # --- Données de base ---
+      curr_temp: "{{ states(e_temp) | float(0) }}"
+      out_temp: "{{ state_attr(e_ext, 'temperature') | float(0) }}"
+      target_conf: "{{ states(v_conf) | float(20) }}"
+      margin_min: "{{ states(v_margin) | float(0) }}"
+      
+      # --- Identification du Jour et Heure Retour ---
+      today_idx: "{{ now().weekday() }}"
+      entity_today: "{{ days_inputs[today_idx] }}"
+      # Récupération de l'heure définie (ex: "18:00:00")
+      return_time_str: "{{ states(entity_today) }}" 
+      
+      # Conversion en timestamp pour aujourd'hui
+      today_date_str: "{{ now().strftime('%Y-%m-%d') }}"
+      return_dt_str: "{{ today_date_str }} {{ return_time_str }}"
+      return_timestamp: "{{ as_timestamp(return_dt_str, 0) }}"
+      current_timestamp: "{{ as_timestamp(now()) }}"
+      
+      # --- Calcul Physique (Newton) ---
+      # 1. Delta T° à rattraper (Cible Confort - Actuel)
+      delta_temp: "{{ target_conf - curr_temp }}"
+      
+      # 2. Impact du froid extérieur (Plus il fait froid, plus c'est dur de chauffer)
+      cold_impact: "{{ ((p_ref | float) - out_temp) * (p_loss | float) }}"
+      
+      # 3. Puissance Effective (Puissance Radiateur - Pertes murs)
+      effective_power: "{{ (p_power | float) - cold_impact }}"
+      
+      # 4. Temps nécessaire (en minutes)
+      # Formule: (Degrés manquants / Vitesse chauffe réelle) * 60 min
+      calc_minutes: >-
+        {% if delta_temp <= 0 %} 0
+        {% elif effective_power <= 0.1 %} 300 
+        {% else %}
+          {{ ((delta_temp / effective_power) * 60) | int }}
+        {% endif %}
+      
+      # 5. Temps total avec marge utilisateur
+      total_preheat_min: "{{ (calc_minutes | int) + (margin_min | int) }}"
+      
+      # --- Détection Activation Préchauffage ---
+      # Si (Heure Retour - Maintenant) < Temps de chauffe
+      seconds_until_return: "{{ return_timestamp - current_timestamp }}"
+      is_preheat_time: >-
+        {% if seconds_until_return > 0 and seconds_until_return <= (total_preheat_min * 60) %}
+          true
+        {% else %}
+          false
+        {% endif %}
+
+  # ----------------------------------------------------
+  # 3. ACTIONS ET MISE A JOUR
+  # ----------------------------------------------------
+  
+  # A. Mise à jour affichage Temps
+  - service: input_text.set_value
+    target:
+      entity_id: !input display_preheat_time
+    data:
+      value: >-
+        {% if delta_temp <= 0 %}
+          T° OK
+        {% else %}
+          Besoin: {{ calc_minutes }}m (+{{ margin_min }}m marge)
+        {% endif %}
+
+  # B. Détermination de la consigne finale
+  - variables:
+      is_boost: "{{ is_state(e_boost, 'on') }}"
+      is_home: "{{ is_state(e_tracker, 'home') }}"
+      manual_mode: "{{ states(e_mode) }}"
+      
+      final_mode: >-
+        {% if is_boost %} BOOST
+        {% elif is_preheat_time and not is_home %} PRECHAUFFE
+        {% elif is_home %} {{ manual_mode | upper }}
+        {% else %} ABSENT
+        {% endif %}
+      
+      final_target: >-
+        {% if final_mode == 'BOOST' %} {{ states(v_boost) | float }}
+        {% elif final_mode == 'PRECHAUFFE' %} {{ target_conf }}
+        {% elif final_mode == 'ABSENT' %} {{ states(v_eco) | float }}
+        {% elif manual_mode == 'eco' %} {{ states(v_eco) | float }}
+        {% else %} {{ target_conf }}
+        {% endif %}
+
+  # C. Affichage État
+  - service: input_text.set_value
+    target:
+      entity_id: !input display_status
+    data:
+      value: "{{ final_mode }} (Cible: {{ final_target }}°)"
+
+  # D. Pilotage Radiateur
+  - choose:
+      - conditions: "{{ curr_temp < (final_target - 0.2) }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input heater_switch
+      - conditions: "{{ curr_temp > (final_target + 0.2) }}"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input heater_switch
